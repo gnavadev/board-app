@@ -1,4 +1,12 @@
-# Logs
+.env*
+!.env.example
+
+node_modules
+
+dist
+dist-ssr
+*.local
+
 logs
 *.log
 npm-debug.log*
@@ -7,17 +15,14 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-.DS_Store
-dist
-dist-ssr
-coverage
-*.local
+*.tsbuildinfo
+.eslintcache
 
+coverage
 /cypress/videos/
 /cypress/screenshots/
 
-# Editor directories and files
+.DS_Store
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -26,5 +31,3 @@ coverage
 *.njsproj
 *.sln
 *.sw?
-
-*.tsbuildinfo

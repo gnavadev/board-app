@@ -1,6 +1,11 @@
-import { fileURLToPath, URL } from 'node:url'
+import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue'
+import vue from '@vitejs/plugin-vue';
+
+// --- Add these imports for the icon plugins ---
+import Components from 'unplugin-vue-components/vite';
+import Icons from 'unplugin-icons/vite';
+import IconsResolver from 'unplugin-icons/resolver';
 
 const phasermsg = () => {
     return {
@@ -12,7 +17,6 @@ const phasermsg = () => {
             const line = "---------------------------------------------------------";
             const msg = `❤️❤️❤️ Tell us about your game! - games@phaser.io ❤️❤️❤️`;
             process.stdout.write(`${line}\n${msg}\n${line}\n`);
-
             process.stdout.write(`✨ Done ✨\n`);
         }
     }
@@ -22,13 +26,25 @@ export default defineConfig({
     base: './',
     plugins: [
         vue(),
-        phasermsg()
+        phasermsg(),
+
+        // --- Add the plugin configurations here ---
+        Components({
+            resolvers: [
+                IconsResolver({
+                    prefix: 'icon',
+                }),
+            ],
+        }),
+        Icons({
+            autoInstall: true,
+        }),
     ],
     resolve: {
         alias: {
-          '@': fileURLToPath(new URL('../src', import.meta.url))
+            '@': fileURLToPath(new URL('../src', import.meta.url))
         }
-      },
+    },
     logLevel: 'warning',
     build: {
         rollupOptions: {
