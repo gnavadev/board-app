@@ -47,17 +47,17 @@
 import { ref, onMounted, defineEmits } from 'vue'
 import { watchDebounced } from '@vueuse/core'
 
-const props = defineProps({
-  id: String,
-  x: Number,
-  y: Number,
-  color: String,
-  mode: String,
-  ownerId: String,
-  // Props to receive saved data from Supabase
-  text_content: String,
-  canvas_content: String,
-})
+// This is the corrected props definition
+const props = defineProps<{
+  id?: string,
+  user_id?: string,
+  x?: number,
+  y?: number,
+  color?: string,
+  mode?: 'draw' | 'text' | 'erase',
+  text_content?: string | null,
+  canvas_content?: string | null,
+}>()
 
 const emit = defineEmits(['update', 'remove', 'move'])
 
@@ -72,11 +72,10 @@ let offsetX = 0, offsetY = 0
 
 // --- Save text content automatically when user stops typing ---
 watchDebounced(text, (newText) => {
-  // Only emit if the text has actually changed from what's in the DB
   if (newText !== props.text_content) {
     emit('update', { id: props.id, text_content: newText })
   }
-}, { debounce: 500, maxWait: 2000 }) // Saves 500ms after typing stops
+}, { debounce: 500, maxWait: 2000 })
 
 // --- Drag and Move Logic ---
 function startDrag(e: MouseEvent) {
@@ -95,7 +94,6 @@ function onDrag(e: MouseEvent) {
   if (!dragging.value) return; 
   x.value = e.clientX - offsetX; 
   y.value = e.clientY - offsetY; 
-  // Emit a 'move' event with all necessary data for an update
   emit('move', { id: props.id, x: x.value, y: y.value }) 
 }
 
@@ -132,7 +130,6 @@ onMounted(() => {
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
 
-      // Load existing drawing from the database when component mounts
       if (props.canvas_content) {
         const image = new Image()
         image.onload = () => {
@@ -170,9 +167,8 @@ function stopDrawing() {
   drawing = false
   ctx?.closePath()
 
-  // Save canvas drawing when user finishes a stroke
   if (canvas.value) {
-    const canvasData = canvas.value.toDataURL() // Convert drawing to text
+    const canvasData = canvas.value.toDataURL()
     emit('update', { id: props.id, canvas_content: canvasData })
   }
 }

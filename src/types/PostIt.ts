@@ -1,9 +1,10 @@
 export interface PostItData {
-  id: string
-  x: number
-  y: number
-  mode: 'draw' | 'text'
-  content?: string
-  color?: string
-  ownerId: string
+  id: string;
+  user_id: string;
+  x: number;
+  y: number;
+  color: string;
+  mode: 'draw' | 'text' | 'erase';
+  text_content: string | null;
+  canvas_content: string | null;
 }
