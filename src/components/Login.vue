@@ -4,11 +4,11 @@
       <h1>Post-It Board</h1>
       <p>Sign in to create and view your post-it note.</p>
       <div class="login-buttons">
-        <button class="github-btn" @click="signInWithGitHub">
+        <button class="github-btn" @click="handleSignIn('github')">
           <icon-mdi-github />
           <span>Sign In with GitHub</span>
         </button>
-        <button class="linkedin-btn" @click="signInWithLinkedIn">
+        <button class="linkedin-btn" @click="handleSignIn('linkedin_oidc', { scopes: 'openid profile email' })">
           <icon-mdi-linkedin />
           <span>Sign In with LinkedIn</span>
         </button>
@@ -26,45 +26,35 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { supabase } from '../supabase';
+import type { Provider } from '@supabase/supabase-js';
 
 const errorMsg = ref<string | null>(null);
 
-async function signInWithGitHub() {
+async function handleSignIn(provider: Provider, options?: { scopes: string }) {
   errorMsg.value = null;
   const { error } = await supabase.auth.signInWithOAuth({
-    provider: 'github',
+    provider,
+    options,
   });
-  if (error) errorMsg.value = `Error: ${error.message}`;
-}
-
-async function signInWithLinkedIn() {
-  errorMsg.value = null;
-  const { error } = await supabase.auth.signInWithOAuth({
-    provider: 'linkedin_oidc',
-    options: {
-      scopes: 'openid profile email'
-    }
-  });
-  if (error) errorMsg.value = `Error: ${error.message}`;
+  if (error) {
+    errorMsg.value = `Error: ${error.message}`;
+  }
 }
 </script>
 
 <style scoped>
-/* --- New Styles --- */
 .login-container {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100vh;
-  /* Corkboard background from Board.vue */
   background-color: #b58b4c;
   background-image: radial-gradient(rgba(0,0,0,0.1) 1px, transparent 1px);
   background-size: 20px 20px;
   padding: 20px;
 }
 .login-box {
-  /* Post-it note style */
   background: #fff475;
   font-family: "Comic Sans MS", cursive;
   color: #333;
@@ -101,14 +91,20 @@ button {
   cursor: pointer;
   transition: all 0.2s;
   color: white;
-  font-family: sans-serif; /* Use a standard font for buttons */
+  font-family: sans-serif;
 }
-.github-btn { background-color: #333; }
-.github-btn:hover { background-color: #444; }
-
-.linkedin-btn { background-color: #0077B5; }
-.linkedin-btn:hover { background-color: #005e90; }
-
+.github-btn {
+  background-color: #333;
+}
+.github-btn:hover {
+  background-color: #444;
+}
+.linkedin-btn {
+  background-color: #0077B5;
+}
+.linkedin-btn:hover {
+  background-color: #005e90;
+}
 .connect-btn {
   display: inline-flex;
   align-items: center;
@@ -124,7 +120,6 @@ button {
 .connect-btn:hover {
   opacity: 1;
 }
-
 .error {
   margin-top: 15px;
   color: #d93025;

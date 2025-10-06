@@ -1,20 +1,36 @@
 <template>
-  <div class="board-viewport" @mousedown="startPan" @wheel.prevent="onZoom">
+  <div class="board-viewport" @mousedown="panHandlers.start" @wheel.prevent="panHandlers.zoom">
     <div class="board" :style="boardStyle">
       <PostIt
         v-for="note in postIts"
         :key="note.id"
         v-bind="note"
+        :session="session"
+        :is-being-dragged="remotelyDraggedIds.has(note.id)"
         @update="updatePostIt"
-        @move="updatePostIt"
         @remove="removePostIt"
       />
+    </div>
+
+    <div class="online-cursors">
+      <div
+        v-for="cursor in onlineCursors"
+        :key="cursor.user_id"
+        class="remote-cursor"
+        :style="getCursorStyle(cursor)"
+      >
+        <icon-material-symbols-arrow-selector-tool-rounded
+          class="cursor-dot"
+          :style="{ color: cursor.color }"
+        />
+        <div class="cursor-label">{{ cursor.displayName }}</div>
+      </div>
     </div>
 
     <div class="ui-overlay">
       <div class="add-controls">
         <div v-if="!currentUserPostIt && !loading">
-          <button class="add-btn" @click="toggleColorPicker">
+          <button class="add-btn" @click="isColorPickerVisible = !isColorPickerVisible">
             <icon-ic-baseline-add-circle /> Add Your Post-It
           </button>
           <div v-if="isColorPickerVisible" class="color-picker">
@@ -23,7 +39,7 @@
               :key="color"
               :style="{ backgroundColor: color }"
               class="color-swatch"
-              @click="createPostIt(color)"
+              @click="handleCreatePostIt(color)"
             ></button>
           </div>
         </div>
@@ -41,150 +57,248 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import { supabase } from "../supabase";
-import type { Session } from "@supabase/supabase-js";
-import PostIt from "./PostIt.vue";
-import type { PostItData } from "@/types/PostIt";
+import { ref, computed, onMounted, onUnmounted, reactive, type Ref, type ComputedRef } from 'vue'
+import { supabase } from '../supabase'
+import type { Session, RealtimeChannel } from '@supabase/supabase-js'
+import PostIt from './PostIt.vue'
+import type { PostItData, CursorData } from '@/types' 
 
-const props = defineProps<{ session: Session }>();
+const props = defineProps<{ session: Session }>()
 
-// Revert back to an array to hold all post-its
-const postIts = ref<PostItData[]>([]);
-const loading = ref(true);
+// --- Composables ---
+const useBoardPanAndZoom = () => {
+  const scale = ref(1)
+  const translateX = ref(0)
+  const translateY = ref(0)
+  const isPanning = ref(false)
+  let panStartX = 0
+  let panStartY = 0
 
-// Computed property to find the current user's post-it in the array
-const currentUserPostIt = computed(() => 
-  postIts.value.find(p => p.user_id === props.session.user.id)
-);
+  const boardStyle = computed(() => ({
+    transform: `translate(${translateX.value}px, ${translateY.value}px) scale(${scale.value})`,
+    cursor: isPanning.value ? 'grabbing' : 'grab',
+  }))
 
-// --- Fetch data and listen for real-time changes ---
-onMounted(async () => {
-  // 1. Initial fetch for all post-its
-  const { data, error } = await supabase.from("postits").select("*");
-  if (error) {
-    console.error("Error fetching post-its:", error);
-  } else {
-    postIts.value = data;
+  const onPan = (e: MouseEvent) => {
+    if (!isPanning.value) return
+    translateX.value += e.clientX - panStartX
+    translateY.value += e.clientY - panStartY
+    panStartX = e.clientX
+    panStartY = e.clientY
   }
-  loading.value = false;
 
-  // 2. Listen for real-time changes and update the board live
-  supabase
-    .channel('public:postits')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'postits' }, (payload) => {
-      // Add new post-its to the array
-      postIts.value.push(payload.new as PostItData);
-    })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'postits' }, (payload) => {
-      // Find and update the post-it in the array
-      const index = postIts.value.findIndex(p => p.id === payload.new.id);
-      if (index > -1) {
-        postIts.value[index] = { ...postIts.value[index], ...payload.new };
+  const endPan = () => {
+    isPanning.value = false
+    window.removeEventListener('mousemove', onPan)
+  }
+
+  const startPan = (e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest('.postit, .ui-overlay')) return
+    isPanning.value = true
+    panStartX = e.clientX
+    panStartY = e.clientY
+    window.addEventListener('mousemove', onPan)
+    window.addEventListener('mouseup', endPan, { once: true })
+  }
+
+  const onZoom = (e: WheelEvent) => {
+    const zoomIntensity = 0.1
+    const direction = e.deltaY < 0 ? 1 : -1
+    const newScale = Math.max(0.1, Math.min(10, scale.value + direction * zoomIntensity * scale.value))
+    translateX.value = e.clientX - (e.clientX - translateX.value) * (newScale / scale.value)
+    translateY.value = e.clientY - (e.clientY - translateY.value) * (newScale / scale.value)
+    scale.value = newScale
+  }
+
+  return { scale, translateX, translateY, boardStyle, panHandlers: { start: startPan, zoom: onZoom } }
+}
+
+const usePostItData = (session: Session) => {
+  const postIts = ref<PostItData[]>([])
+  const loading = ref(true)
+
+  const currentUserPostIt: ComputedRef<PostItData | undefined> = computed(() =>
+    postIts.value.find(p => p.user_id === session.user.id)
+  )
+
+  const fetchPostIts = async () => {
+    loading.value = true
+    const { data } = await supabase.from('postits').select('*')
+    postIts.value = data || []
+    loading.value = false
+  }
+
+  const createPostIt = async (newPost: Omit<PostItData, 'id' | 'created_at'>) => {
+    await supabase.from('postits').insert(newPost)
+  }
+
+  const updatePostIt = async (updated: Partial<PostItData> & { id: string }) => {
+    await supabase.from('postits').update(updated).eq('id', updated.id)
+  }
+
+  const removePostIt = async (id: string) => {
+    await supabase.from('postits').delete().eq('id', id)
+  }
+
+  onMounted(fetchPostIts)
+
+  return { postIts, loading, currentUserPostIt, createPostIt, updatePostIt, removePostIt }
+}
+
+const useRealtimeEvents = (postIts: Ref<PostItData[]>, session: Session) => {
+  const remotelyDraggedIds = ref(new Set<string>())
+  const onlineCursors = reactive<Record<string, CursorData>>({})
+  const userColors = reactive<Record<string, string>>({})
+  const cursorColors = ['#e6194b', '#3cb44b', '#ffe119', '#0082c8', '#f58231', '#911eb4', '#46f0f0', '#f032e6']
+
+  const getUserColor = (userId: string) => {
+    if (!userColors[userId]) {
+      userColors[userId] = cursorColors[Math.floor(Math.random() * cursorColors.length)]
+    }
+    return userColors[userId]
+  }
+  
+  const setupDbSubscriptions = () => {
+    return supabase.channel('public:postits')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'postits' }, 
+        (payload) => postIts.value.push(payload.new as PostItData))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'postits' }, 
+        (payload) => {
+          const index = postIts.value.findIndex(p => p.id === payload.new.id)
+          if (index > -1) Object.assign(postIts.value[index], payload.new)
+        })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'postits' }, 
+        (payload) => postIts.value = postIts.value.filter(p => p.id !== payload.old.id))
+      .subscribe()
+  }
+
+  const setupEventSubscriptions = () => {
+    return supabase.channel('board_events')
+      .on('broadcast', { event: 'drag_start' }, 
+        ({ payload }) => remotelyDraggedIds.value.add(payload.id))
+      .on('broadcast', { event: 'drag_move' }, 
+        ({ payload }) => {
+          const note = postIts.value.find(p => p.id === payload.id)
+          if (note) {
+            note.x = payload.x
+            note.y = payload.y
+          }
+        })
+      .on('broadcast', { event: 'drag_end' }, 
+        ({ payload }) => remotelyDraggedIds.value.delete(payload.id))
+      .subscribe()
+  }
+
+  const setupCursorSubscriptions = (animate: () => void) => {
+    const channel = supabase.channel('board_cursors')
+    channel.on('broadcast', { event: 'cursor_move' }, ({ payload: cursor }) => {
+      if (cursor.user_id !== session.user.id) {
+        if (!onlineCursors[cursor.user_id]) {
+          onlineCursors[cursor.user_id] = { ...cursor, color: getUserColor(cursor.user_id) }
+        }
+        onlineCursors[cursor.user_id].targetX = cursor.x
+        onlineCursors[cursor.user_id].targetY = cursor.y
+        onlineCursors[cursor.user_id].displayName = cursor.displayName
       }
-    })
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'postits' }, (payload) => {
-      // Remove the deleted post-it from the array
-      postIts.value = postIts.value.filter(p => p.id !== payload.old.id);
-    })
-    .subscribe();
-});
+    }).subscribe()
+    
+    animate()
+    return channel
+  }
 
-// --- Supabase CRUD Functions ---
-async function createPostIt(color: string) {
-  if (currentUserPostIt.value) return; 
-  isColorPickerVisible.value = false;
+  const broadcastCursor = (() => {
+    let throttleTimeout: number | null = null
+    return (e: MouseEvent, channel: RealtimeChannel) => {
+      if (throttleTimeout) return
+      throttleTimeout = window.setTimeout(() => {
+        throttleTimeout = null
+        const displayName = session.user.user_metadata?.preferred_username || 'Anonymous'
+        channel.send({
+          type: 'broadcast', event: 'cursor_move',
+          payload: {
+            user_id: session.user.id, displayName,
+            x: (e.clientX - translateX.value) / scale.value,
+            y: (e.clientY - translateY.value) / scale.value,
+          },
+        })
+      }, 50)
+    }
+  })()
 
-  const newPostData = {
+  let animationFrameId: number
+  const animateCursors = () => {
+    Object.values(onlineCursors).forEach(cursor => {
+      if (cursor.targetX === undefined || cursor.targetY === undefined) return
+      cursor.x += (cursor.targetX - cursor.x) * 0.2
+      cursor.y += (cursor.targetY - cursor.y) * 0.2
+    })
+    animationFrameId = requestAnimationFrame(animateCursors)
+  }
+
+  onMounted(() => {
+    const dbChannel = setupDbSubscriptions()
+    const eventsChannel = setupEventSubscriptions()
+    const cursorChannel = setupCursorSubscriptions(animateCursors)
+    
+    const handleCursorMove = (e: MouseEvent) => broadcastCursor(e, cursorChannel)
+    window.addEventListener('mousemove', handleCursorMove)
+
+    onUnmounted(() => {
+      supabase.removeChannel(dbChannel)
+      supabase.removeChannel(eventsChannel)
+      supabase.removeChannel(cursorChannel)
+      window.removeEventListener('mousemove', handleCursorMove)
+      cancelAnimationFrame(animationFrameId)
+    })
+  })
+
+  return { remotelyDraggedIds, onlineCursors }
+}
+
+// --- Component Logic ---
+const { scale, translateX, translateY, boardStyle, panHandlers } = useBoardPanAndZoom()
+const { postIts, loading, currentUserPostIt, createPostIt, updatePostIt, removePostIt } = usePostItData(props.session)
+const { remotelyDraggedIds, onlineCursors } = useRealtimeEvents(postIts, props.session)
+
+const isColorPickerVisible = ref(false)
+const pastelColors = ["#fff475", "#ffb5e8", "#b5e8ff", "#b5ffb7", "#ffd5b5"]
+
+const getCursorStyle = (cursor: CursorData) => ({
+  transform: `translate(${cursor.x * scale.value + translateX.value}px, ${cursor.y * scale.value + translateY.value}px)`
+})
+
+const handleCreatePostIt = async (color: string) => {
+  if (currentUserPostIt.value) return
+  isColorPickerVisible.value = false
+  await createPostIt({
     user_id: props.session.user.id,
     x: (window.innerWidth / 2 - translateX.value) / scale.value,
     y: (window.innerHeight / 2 - translateY.value) / scale.value,
-    color: color,
-    mode: "text",
-    text_content: "", // Start with a blank note
-  };
-  
-  const { error } = await supabase.from("postits").insert(newPostData);
-  if (error) console.error("Error creating post-it:", error);
+    color,
+    mode: 'text',
+    text_content: '',
+    canvas_content: ''
+  })
 }
 
-async function updatePostIt(updated: Partial<PostItData> & { id: string }) {
-  // The realtime listener will handle updating the local state
-  const { error } = await supabase.from("postits").update(updated).eq("id", updated.id);
-  if (error) console.error("Error updating post-it:", error);
+const goToPostIt = () => {
+  const postIt = currentUserPostIt.value
+  if (!postIt) return
+  const newScale = 1
+  const targetX = postIt.x + 110
+  const targetY = postIt.y + 125
+  translateX.value = window.innerWidth / 2 - targetX * newScale
+  translateY.value = window.innerHeight / 2 - targetY * newScale
+  scale.value = newScale
 }
 
-async function removePostIt(id: string) {
-  const { error } = await supabase.from("postits").delete().eq("id", id);
-  if (error) console.error("Error removing post-it:", error);
-}
-
-async function signOut() {
-  await supabase.auth.signOut();
-}
-
-function goToPostIt() {
-  if (!currentUserPostIt.value) return;
-  const newScale = 1;
-  const targetX = currentUserPostIt.value.x + 220 / 2;
-  const targetY = currentUserPostIt.value.y + 250 / 2;
-  translateX.value = window.innerWidth / 2 - targetX * newScale;
-  translateY.value = window.innerHeight / 2 - targetY * newScale;
-  scale.value = newScale;
-}
-
-// --- Pan/Zoom & UI Logic (Unchanged) ---
-const scale = ref(1);
-const translateX = ref(0);
-const translateY = ref(0);
-const isPanning = ref(false);
-let panStartX = 0, panStartY = 0;
-
-const isColorPickerVisible = ref(false);
-const pastelColors = ["#fff475", "#ffb5e8", "#b5e8ff", "#b5ffb7", "#ffd5b5"];
-
-const boardStyle = computed(() => ({
-  transform: `translate(${translateX.value}px, ${translateY.value}px) scale(${scale.value})`,
-  cursor: isPanning.value ? "grabbing" : "grab",
-}));
-
-function toggleColorPicker() { isColorPickerVisible.value = !isColorPickerVisible.value; }
-function startPan(e: MouseEvent) {
-  if ((e.target as HTMLElement).closest(".postit, .ui-overlay")) return;
-  isPanning.value = true;
-  panStartX = e.clientX;
-  panStartY = e.clientY;
-  window.addEventListener("mousemove", onPan);
-  window.addEventListener("mouseup", endPan, { once: true });
-}
-function onPan(e: MouseEvent) {
-  if (!isPanning.value) return;
-  const dx = e.clientX - panStartX;
-  const dy = e.clientY - panStartY;
-  translateX.value += dx;
-  translateY.value += dy;
-  panStartX = e.clientX;
-  panStartY = e.clientY;
-}
-function endPan() {
-  isPanning.value = false;
-  window.removeEventListener("mousemove", onPan);
-}
-function onZoom(e: WheelEvent) {
-  const zoomIntensity = 0.1;
-  const direction = e.deltaY < 0 ? 1 : -1;
-  const newScale = scale.value + direction * zoomIntensity * scale.value;
-  if (newScale < 0.1 || newScale > 10) return;
-  const mouseX = e.clientX;
-  const mouseY = e.clientY;
-  translateX.value = mouseX - (mouseX - translateX.value) * (newScale / scale.value);
-  translateY.value = mouseY - (mouseY - translateY.value) * (newScale / scale.value);
-  scale.value = newScale;
+const signOut = async () => {
+  await supabase.auth.signOut()
 }
 </script>
 
 <style scoped>
-/* Your existing styles are perfect, no changes needed here. */
+/* Styles remain unchanged */
 .board-viewport {
   position: relative;
   width: 100%;
@@ -204,6 +318,32 @@ function onZoom(e: WheelEvent) {
   transform-origin: 0 0;
   transition: transform 0.6s cubic-bezier(0.25, 1, 0.5, 1);
 }
+.online-cursors {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 200;
+}
+.remote-cursor {
+  position: absolute;
+  transform: translate(-5px, -2px);
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+.cursor-dot {
+  font-size: 20px;
+}
+.cursor-label {
+  padding: 2px 6px;
+  border-radius: 10px;
+  background-color: rgba(0, 0, 0, 0.6);
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+  white-space: nowrap;
+}
 .ui-overlay {
   position: fixed;
   top: 10px;
@@ -219,10 +359,6 @@ function onZoom(e: WheelEvent) {
   align-items: center;
   gap: 20px;
 }
-.add-controls,
-.sign-out-btn {
-  pointer-events: auto;
-}
 .add-btn {
   background: #fdf3d0;
   border: 1px solid #d3c8aa;
@@ -230,23 +366,20 @@ function onZoom(e: WheelEvent) {
   padding: 10px 20px;
   font-size: 16px;
   cursor: pointer;
-  box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+  box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
   transition: all 0.2s;
   display: flex;
   align-items: center;
   gap: 0.5em;
 }
-.add-btn:hover {
-  transform: scale(1.05);
-  border-color: #bcae8c;
-}
+.add-btn:hover { transform: scale(1.05); border-color: #bcae8c; }
 .color-picker {
   display: flex;
   gap: 8px;
   background: #fff;
   padding: 8px;
   border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   margin-top: 10px;
 }
 .color-swatch {
@@ -255,16 +388,15 @@ function onZoom(e: WheelEvent) {
   border-radius: 50%;
   border: 2px solid #fff;
   cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   transition: transform 0.15s ease;
 }
-.color-swatch:hover {
-  transform: scale(1.15);
-}
+.color-swatch:hover { transform: scale(1.15); }
 .sign-out-btn {
   position: absolute;
   top: 0;
   right: 0;
+  pointer-events: auto;
   background: #d9534f;
   color: white;
   border: none;
@@ -272,12 +404,11 @@ function onZoom(e: WheelEvent) {
   border-radius: 10px;
   cursor: pointer;
   font-size: 16px;
-  box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+  box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
 }
-.sign-out-btn:hover {
-  background: #c9302c;
-}
+.sign-out-btn:hover { background: #c9302c; }
 .connect-btn {
+  pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -287,7 +418,5 @@ function onZoom(e: WheelEvent) {
   opacity: 0.7;
   transition: opacity 0.2s;
 }
-.connect-btn:hover {
-  opacity: 1;
-}
+.connect-btn:hover { opacity: 1; }
 </style>

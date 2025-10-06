@@ -13,6 +13,7 @@ declare module 'vue' {
     IconIcBaselineClose: typeof import('~icons/ic/baseline-close')['default']
     IconIcBaselineDraw: typeof import('~icons/ic/baseline-draw')['default']
     IconIcBaselineEditNote: typeof import('~icons/ic/baseline-edit-note')['default']
+    IconMaterialSymbolsArrowSelectorToolRounded: typeof import('~icons/material-symbols/arrow-selector-tool-rounded')['default']
     IconMdiArrowRightThinCircleOutline: typeof import('~icons/mdi/arrow-right-thin-circle-outline')['default']
     IconMdiEraser: typeof import('~icons/mdi/eraser')['default']
     IconMdiGithub: typeof import('~icons/mdi/github')['default']
